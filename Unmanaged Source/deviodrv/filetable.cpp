@@ -197,6 +197,7 @@ NTSTATUS DevIoDrvCreateFileTableEntry(PFILE_OBJECT FileObject)
         InitializeListHead(&context->ClientReceivedIrpList);
         InitializeListHead(&context->ClientSentIrpList);
 
+        context->Diagnostics = AimDiagCreate((ULONG_PTR)context, 0, AimDiagDevio);
         context->Server = FileObject;
         context->RefCount = 1;
         FileObject->FsContext2 = context;
@@ -208,6 +209,9 @@ NTSTATUS DevIoDrvCreateFileTableEntry(PFILE_OBJECT FileObject)
     }
 
     InterlockedExchange(&FileTableListLock, 0);
+
+    if (NT_SUCCESS(status))
+        AimDiagReport(context->Diagnostics, "deviodrv", 0xfe, 0, 0, NULL);
 
     return status;
 }
@@ -245,8 +249,13 @@ NTSTATUS DevIoDrvCloseFileTableEntry(PFILE_OBJECT FileObject)
     RemoveEntryList(&context->ListEntry);
 
     FileObject->FsContext2 = NULL;
+    AIM_DIAG_CONTEXT* diagnostics = context->Diagnostics;
+    context->Diagnostics = NULL;
 
     InterlockedExchange(&FileTableListLock, 0);
+
+    AimDiagReport(diagnostics, "deviodrv", 0xff, 0, 0, NULL);
+    AimDiagRelease(diagnostics);
 
     ExFreePoolWithTag(context->Name.Buffer, POOL_TAG);
 

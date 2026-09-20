@@ -38,6 +38,7 @@
 #include <ntkmapi.h>
 
 #include <imdproxy.h>
+#include <flushdiag.h>
 
 typedef struct _OBJECT_CONTEXT
 {
@@ -46,6 +47,8 @@ typedef struct _OBJECT_CONTEXT
     UNICODE_STRING Name;
 
     LONG RefCount;
+
+    AIM_DIAG_CONTEXT* Diagnostics; // Owner reference until final file close.
 
     LARGE_INTEGER FileSize;
 
@@ -88,6 +91,8 @@ typedef struct _IRP_QUEUE_ITEM
     PIMDPROXY_DEVIODRV_BUFFER_HEADER MappedBuffer;
 
     ULONG MappedBufferSize;
+
+    AIM_DIAG_TOKEN DiagnosticToken;
 
 } IRP_QUEUE_ITEM, *PIRP_QUEUE_ITEM;
 

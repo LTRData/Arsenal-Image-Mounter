@@ -14,6 +14,9 @@
 
 #include "phdskmnt.h"
 
+volatile LONG AimDiagNextId = 0;
+volatile LONG AimDiagPrint = 1;
+
 #pragma warning(disable : 4204)
 #pragma warning(disable : 4221)
 
@@ -719,7 +722,9 @@ __inout __deref PKIRQL LowestAssumedIrql
 
         KdPrint2((__FUNCTION__ ": Completing pWkRtnParms = 0x%p, pSrb = 0x%p\n", pWkRtnParms, pWkRtnParms->pSrb));
 
+        AimDiagPhase(&pWkRtnParms->DiagnosticToken, 2);
         ScsiPortNotification(RequestComplete, pWkRtnParms->pHBAExt, pWkRtnParms->pSrb);
+        AimDiagComplete(&pWkRtnParms->DiagnosticToken);
         ScsiPortNotification(NextRequest, pWkRtnParms->pHBAExt);
 
         ExFreePoolWithTag(pWkRtnParms, MP_TAG_GENERAL);      // Free parm list.
@@ -760,6 +765,7 @@ __inout __deref     PSCSI_REQUEST_BLOCK  pSrb
 {
     KIRQL                   lowest_assumed_irql = PASSIVE_LEVEL;
     ResultType              Result = ResultDone;
+    AIM_DIAG_TOKEN immediate_diagnostic = { 0 };
     pHW_HBA_EXT             pHBAExt = (pHW_HBA_EXT)DeviceExtension;
 #ifdef USE_SCSIPORT
     UCHAR                   PathId = pSrb->PathId;
@@ -802,7 +808,7 @@ __inout __deref     PSCSI_REQUEST_BLOCK  pSrb
         }
         else
         {
-            ScsiExecute(pHBAExt, pSrb, &Result, &lowest_assumed_irql);
+            ScsiExecute(pHBAExt, pSrb, &Result, &lowest_assumed_irql, &immediate_diagnostic);
         }
         break;
 
@@ -854,13 +860,17 @@ __inout __deref     PSCSI_REQUEST_BLOCK  pSrb
     {                         // Complete now?
 #ifdef USE_SCSIPORT
         KdPrint2(("PhDskMnt::MpHwStartIo sending 'RequestComplete', 'NextRequest' and 'NextLuRequest' to ScsiPort.\n"));
+        AimDiagPhase(&immediate_diagnostic, 2);
         ScsiPortNotification(RequestComplete, pHBAExt, pSrb);
+        AimDiagComplete(&immediate_diagnostic);
         ScsiPortNotification(NextRequest, pHBAExt);
         ScsiPortNotification(NextLuRequest, pHBAExt, 0, 0, 0);
 #endif
 #ifdef USE_STORPORT
         KdPrint2(("PhDskMnt::MpHwStartIo sending 'RequestComplete' to port StorPort.\n"));
+        AimDiagPhase(&immediate_diagnostic, 2);
         StorPortNotification(RequestComplete, pHBAExt, pSrb);
+        AimDiagComplete(&immediate_diagnostic);
 #endif
     }
     else
