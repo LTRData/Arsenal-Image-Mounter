@@ -710,6 +710,15 @@ DevIoDrvDispatchFlushBuffers(PDEVICE_OBJECT, PIRP Irp)
     KdPrint(("IRP=%p Flush buffers for FileObject=%p\n",
         Irp, IoGetCurrentIrpStackLocation(Irp)->FileObject));
 
+    // The incoming IRP's open FILE_OBJECT keeps its file context alive here.
+    // Capture a separate statistics ref; never revisit the file after completion.
+    PIO_STACK_LOCATION io_stack = IoGetCurrentIrpStackLocation(Irp);
+    POBJECT_CONTEXT context = DevIoDrvGetContext(io_stack);
+    AIM_DIAG_CONTEXT* diagnostics = context != NULL ? context->Diagnostics : NULL;
+    AimDiagReference(diagnostics);
+    AimDiagReport(diagnostics, "deviodrv", IRP_MJ_FLUSH_BUFFERS, 0, 0, NULL);
+    AimDiagRelease(diagnostics);
+
     DevIoDrvCompleteIrp(Irp, STATUS_SUCCESS, 0);
 
     return STATUS_SUCCESS;

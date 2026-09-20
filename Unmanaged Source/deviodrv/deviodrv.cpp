@@ -38,6 +38,9 @@
 
 #include "deviodrv.h"
 
+volatile LONG AimDiagNextId = 0;
+volatile LONG AimDiagPrint = 1;
+
 #pragma code_seg("INIT")
 
 NTSTATUS

@@ -164,6 +164,7 @@ DevIoDrvGetSentClientRequest(POBJECT_CONTEXT File,
         {
             RemoveEntryList(entry);
             found_item = CONTAINING_RECORD(entry, IRP_QUEUE_ITEM, ListEntry);
+            AimDiagPhase(&found_item->DiagnosticToken, 2);
             break;
         }
     }
@@ -193,6 +194,7 @@ DevIoDrvCompleteIrpQueueItem(PIRP_QUEUE_ITEM Item,
     }
 
     DevIoDrvCompleteIrp(Item->Irp, Status, Length);
+    AimDiagComplete(&Item->DiagnosticToken);
 
     ExFreePoolWithTag(Item, POOL_TAG);
 }
@@ -657,6 +659,8 @@ DevIoDrvDispatchServerIORequest(PIRP Irp,
         return STATUS_PENDING;
     }
 
+    client_item = CONTAINING_RECORD(entry, IRP_QUEUE_ITEM, ListEntry);
+    AimDiagPhase(&client_item->DiagnosticToken, 1);
     ImScsiReleaseLock(&lock_handle, LowestAssumedIrql);
 
     server_item->MemoryIrp = memory_irp;
@@ -713,6 +717,7 @@ DevIoDrvSendClientRequestToServer(POBJECT_CONTEXT File,
         if (ServerItem->MappedBufferSize < IMDPROXY_HEADER_SIZE + io_stack_client->Parameters.Read.Length)
         {
             IoMarkIrpPending(ClientItem->Irp);
+            AimDiagPhase(&ClientItem->DiagnosticToken, 0);
             ImScsiInterlockedInsertHeadList(&File->ClientReceivedIrpList, &ClientItem->ListEntry, &File->IrpListLock, LowestAssumedIrql);
 
             DevIoDrvCompleteIrpQueueItem(ServerItem, STATUS_BUFFER_TOO_SMALL, 0, LowestAssumedIrql);
@@ -744,6 +749,7 @@ DevIoDrvSendClientRequestToServer(POBJECT_CONTEXT File,
         if (ServerItem->MappedBufferSize < IMDPROXY_HEADER_SIZE + io_stack_client->Parameters.Write.Length)
         {
             IoMarkIrpPending(ClientItem->Irp);
+            AimDiagPhase(&ClientItem->DiagnosticToken, 0);
             ImScsiInterlockedInsertHeadList(&File->ClientReceivedIrpList, &ClientItem->ListEntry, &File->IrpListLock, LowestAssumedIrql);
 
             DevIoDrvCompleteIrpQueueItem(ServerItem, STATUS_BUFFER_TOO_SMALL, 0, LowestAssumedIrql);
@@ -793,6 +799,7 @@ DevIoDrvSendClientRequestToServer(POBJECT_CONTEXT File,
         if (ServerItem->MappedBufferSize < IMDPROXY_HEADER_SIZE + sizeof DEVICE_DATA_SET_RANGE)
         {
             IoMarkIrpPending(ClientItem->Irp);
+            AimDiagPhase(&ClientItem->DiagnosticToken, 0);
             ImScsiInterlockedInsertHeadList(&File->ClientReceivedIrpList, &ClientItem->ListEntry, &File->IrpListLock, LowestAssumedIrql);
 
             DevIoDrvCompleteIrpQueueItem(ServerItem, STATUS_BUFFER_TOO_SMALL, 0, LowestAssumedIrql);
@@ -831,6 +838,7 @@ DevIoDrvSendClientRequestToServer(POBJECT_CONTEXT File,
         if (ServerItem->MappedBufferSize < IMDPROXY_HEADER_SIZE + trim_info->NumRanges * sizeof DEVICE_DATA_SET_RANGE)
         {
             IoMarkIrpPending(ClientItem->Irp);
+            AimDiagPhase(&ClientItem->DiagnosticToken, 0);
             ImScsiInterlockedInsertHeadList(&File->ClientReceivedIrpList, &ClientItem->ListEntry, &File->IrpListLock, LowestAssumedIrql);
 
             DevIoDrvCompleteIrpQueueItem(ServerItem, STATUS_BUFFER_TOO_SMALL, 0, LowestAssumedIrql);
@@ -914,6 +922,13 @@ DevIoDrvDispatchClientRequest(PIRP Irp,
         return STATUS_DEVICE_DOES_NOT_EXIST;
     }
 
+    if (io_stack->MajorFunction == IRP_MJ_WRITE)
+        AimDiagAccept(&client_item->DiagnosticToken, context->Diagnostics, AimDiagWrite10);
+    else if (io_stack->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL)
+        AimDiagAccept(&client_item->DiagnosticToken, context->Diagnostics,
+            io_stack->Parameters.FileSystemControl.FsControlCode == FSCTL_SET_ZERO_DATA ?
+                AimDiagZero : AimDiagUnmap);
+
     KIRQL cancel_irql;
 
     IoAcquireCancelSpinLock(&cancel_irql);
@@ -955,6 +970,7 @@ DevIoDrvDispatchClientRequest(PIRP Irp,
         return STATUS_PENDING;
     }
 
+    AimDiagPhase(&client_item->DiagnosticToken, 1);
     ImScsiReleaseLock(&lock_handle, LowestAssumedIrql);
 
     KdPrint(("IRP=%p FileObject=%p Found pending server IRP=%p. Completing client request in-thread.\n",

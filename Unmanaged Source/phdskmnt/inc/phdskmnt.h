@@ -75,6 +75,7 @@ extern "C" {
 #include <scsiwmi.h>
 
 #include <ntkmapi.h>
+#include <flushdiag.h>
 
 #endif
 
@@ -319,6 +320,7 @@ extern "C" {
         CHAR                  GuidString[39];
         UNICODE_STRING        WriteOverlayFileName;
         HANDLE                WriteOverlay;
+        AIM_DIAG_CONTEXT*     Diagnostics; // Owner ref; publication protected by LUListLock.
     } HW_LU_EXTENSION, *pHW_LU_EXTENSION;
 
     typedef struct _HW_SRB_EXTENSION {
@@ -340,6 +342,7 @@ extern "C" {
         PVOID                AllocatedBuffer;
         BOOLEAN              CopyBack;
         PKEVENT              CallerWaitEvent;
+        AIM_DIAG_TOKEN       DiagnosticToken;
     } MP_WorkRtnParms, *pMP_WorkRtnParms;
 
     typedef enum ResultType {
@@ -458,7 +461,8 @@ extern "C" {
             __in pHW_HBA_EXT DevExt,
             __in PSCSI_REQUEST_BLOCK,
             __in pResultType,
-            __in PKIRQL
+            __in PKIRQL,
+            AIM_DIAG_TOKEN* ImmediateDiagnostic
             );
 
     VOID
@@ -496,7 +500,8 @@ extern "C" {
             __in UCHAR									PathId,
             __in UCHAR									TargetId,
             __in UCHAR									Lun,
-            __in PKIRQL                                   LowestAssumedIrql
+            __in PKIRQL                                   LowestAssumedIrql,
+            AIM_DIAG_CONTEXT** Diagnostics = NULL
             );
 
     VOID
@@ -740,7 +745,8 @@ extern "C" {
             __in pHW_LU_EXTENSION     pLUExt,  // LUN device-object extension from port driver.        
             __in PSCSI_REQUEST_BLOCK  pSrb,
             __in pResultType          pResult,
-            __in PKIRQL               LowestAssumedIrql
+            __in PKIRQL               LowestAssumedIrql,
+            AIM_DIAG_CONTEXT* Diagnostics
         );
 
     VOID
@@ -764,7 +770,8 @@ extern "C" {
             __in pHW_LU_EXTENSION     pLUExt,
             __in PSCSI_REQUEST_BLOCK  pSrb,
             __in pResultType          pResult,
-            __in PKIRQL               LowestAssumedIrql
+            __in PKIRQL               LowestAssumedIrql,
+            AIM_DIAG_CONTEXT* Diagnostics, AIM_DIAG_TOKEN* ImmediateDiagnostic
             );
 
     VOID
@@ -938,14 +945,15 @@ extern "C" {
             __in pHW_LU_EXTENSION pLUExt,
             __in PVOID            Buffer,
             __in PLARGE_INTEGER   ByteOffset,
-            __in PULONG           Length
+            __in PULONG           Length,
+            AIM_DIAG_TOKEN* DiagnosticToken
             );
 
     VOID
         ImScsiDispatchUnmapDevice(
             __in pHW_HBA_EXT pHBAExt,
             __in pHW_LU_EXTENSION pLUExt,
-            __in PSCSI_REQUEST_BLOCK pSrb);
+            __in PSCSI_REQUEST_BLOCK pSrb, AIM_DIAG_TOKEN* DiagnosticToken);
 
     NTSTATUS
         ImScsiSafeIOStream(__in PFILE_OBJECT FileObject,

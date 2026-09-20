@@ -59,6 +59,7 @@ __inout __deref PKIRQL         LowestAssumedIrql
     pHW_LU_EXTENSION *      ppLUExt = NULL;
     PLIST_ENTRY             list_ptr;
     pMP_WorkRtnParms        free_worker_params = NULL;
+    AIM_DIAG_CONTEXT*      diagnostics = NULL;
     KLOCK_QUEUE_HANDLE      LockHandle;
 
     KdPrint((__FUNCTION__ ": Removing device: %d:%d:%d pLUExt=%p\n",
@@ -136,7 +137,12 @@ __inout __deref PKIRQL         LowestAssumedIrql
         }
     }
 
+    diagnostics = pLUExt->Diagnostics;
+    pLUExt->Diagnostics = NULL;
     ImScsiReleaseLock(&LockHandle, LowestAssumedIrql);
+
+    AimDiagReport(diagnostics, "phdskmnt", 0xff, 0, 0, NULL);
+    AimDiagRelease(diagnostics);
 
     /// Cleanup all file handles, object name buffers,
     /// proxy refs etc.
@@ -244,6 +250,7 @@ PVOID Context)
     __analysis_assume(Context != NULL);
 
     pMP_WorkRtnParms pWkRtnParms = (pMP_WorkRtnParms)Context;
+    AimDiagPhase(&pWkRtnParms->DiagnosticToken, 1);
     PCDB pCdb = (PCDB)pWkRtnParms->pSrb->Cdb;
     LARGE_INTEGER startingSector = { 0 };
     PKTHREAD thread = NULL;
@@ -444,7 +451,9 @@ PVOID Context)
     {
         KdPrint2(("PhDskMnt::ImScsiParallelReadWriteImageCompletion sending 'RequestComplete', 'NextRequest' and 'NextLuRequest' to ScsiPort.\n"));
 
+        AimDiagPhase(&pWkRtnParms->DiagnosticToken, 2);
         ScsiPortNotification(RequestComplete, pWkRtnParms->pHBAExt, pWkRtnParms->pSrb);
+        AimDiagComplete(&pWkRtnParms->DiagnosticToken);
         ScsiPortNotification(NextRequest, pWkRtnParms->pHBAExt);
         ScsiPortNotification(NextLuRequest, pWkRtnParms->pHBAExt, 0, 0, 0);
 
@@ -488,7 +497,9 @@ PVOID Context)
 #ifdef USE_STORPORT
 
     KdPrint2(("PhDskMnt::ImScsiParallelReadWriteImageCompletion sending 'RequestComplete' to port StorPort.\n"));
+    AimDiagPhase(&pWkRtnParms->DiagnosticToken, 2);
     StorPortNotification(RequestComplete, pWkRtnParms->pHBAExt, pWkRtnParms->pSrb);
+    AimDiagComplete(&pWkRtnParms->DiagnosticToken);
 
     ExFreePoolWithTag(pWkRtnParms, MP_TAG_GENERAL);
 
@@ -939,7 +950,8 @@ ImScsiWriteDevice(
 __in pHW_LU_EXTENSION pLUExt,
 __in PVOID            Buffer,
 __in PLARGE_INTEGER   Offset,
-__in PULONG           Length
+__in PULONG           Length,
+    AIM_DIAG_TOKEN* DiagnosticToken
 )
 {
     IO_STATUS_BLOCK io_status = { 0 };
@@ -949,7 +961,9 @@ __in PULONG           Length
     if (pLUExt->SupportsZero &&
         ImScsiIsBufferZero(Buffer, *Length))
     {
+        AimDiagMarkZero(DiagnosticToken);
         status = ImScsiZeroDevice(pLUExt, Offset, *Length);
+        AimDiagZeroResult(DiagnosticToken, status);
 
         if (NT_SUCCESS(status))
         {
@@ -2403,6 +2417,14 @@ __in __deref PETHREAD ClientThread)
                 status);
         }
     }
+
+    AimDiagSetRoute(pLUExt->Diagnostics,
+        pLUExt->VMDisk ? AimDiagVm :
+        pLUExt->UseProxy ? (pLUExt->Proxy.connection_type == PROXY_CONNECTION::PROXY_CONNECTION_SHM ?
+            AimDiagShmProxy : AimDiagStreamProxy) :
+        pLUExt->FileObject != NULL ? (pLUExt->AWEAllocDisk ? AimDiagAwe : AimDiagParallelFile) :
+            AimDiagQueuedFile, CreateData->Fields.Flags);
+    AimDiagReport(pLUExt->Diagnostics, "phdskmnt", 0xfe, 0, 0, NULL);
 
     status = PsCreateSystemThread(
         &thread_handle,

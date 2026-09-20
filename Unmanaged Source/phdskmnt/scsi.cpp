@@ -126,11 +126,13 @@ ScsiExecute(
 __in pHW_HBA_EXT          pHBAExt,    // Adapter device-object extension from port driver.
 __in PSCSI_REQUEST_BLOCK  pSrb,
 __in pResultType          pResult,
-__in PKIRQL               LowestAssumedIrql
+__in PKIRQL               LowestAssumedIrql,
+    AIM_DIAG_TOKEN* ImmediateDiagnostic
 )
 {
     pHW_LU_EXTENSION  pLUExt = NULL;
     UCHAR             status;
+    AIM_DIAG_CONTEXT* diagnostics = NULL;
 
     KdPrint2((__FUNCTION__ ": pSrb = 0x%p, CDB = 0x%X Path: %x TID: %x Lun: %x\n",
         pSrb, pSrb->Cdb[0], pSrb->PathId, pSrb->TargetId, pSrb->Lun));
@@ -151,7 +153,10 @@ __in PKIRQL               LowestAssumedIrql
 
     // Get the LU extension from port driver.
     status = ScsiGetLUExtension(pHBAExt, &pLUExt, pSrb->PathId,
-        pSrb->TargetId, pSrb->Lun, LowestAssumedIrql);
+        pSrb->TargetId, pSrb->Lun, LowestAssumedIrql,
+        (pSrb->Cdb[0] == SCSIOP_WRITE || pSrb->Cdb[0] == SCSIOP_WRITE16 ||
+            pSrb->Cdb[0] == SCSIOP_UNMAP || pSrb->Cdb[0] == SCSIOP_SYNCHRONIZE_CACHE ||
+            pSrb->Cdb[0] == SCSIOP_SYNCHRONIZE_CACHE16) ? &diagnostics : NULL);
 
     if (status != SRB_STATUS_SUCCESS)
     {
@@ -161,6 +166,10 @@ __in PKIRQL               LowestAssumedIrql
 
         goto Done;
     }
+
+    if (pSrb->Cdb[0] == SCSIOP_SYNCHRONIZE_CACHE || pSrb->Cdb[0] == SCSIOP_SYNCHRONIZE_CACHE16)
+        AimDiagReport(diagnostics, "phdskmnt", pSrb->Cdb[0],
+            pSrb->QueueAction, pSrb->SrbFlags, pSrb->Cdb);
 
     // Set SCSI check conditions if LU is not yet ready
     if (!KeReadStateEvent(&pLUExt->Initialized))
@@ -211,11 +220,11 @@ __in PKIRQL               LowestAssumedIrql
     case SCSIOP_READ16:
     case SCSIOP_WRITE:
     case SCSIOP_WRITE16:
-        ScsiOpReadWrite(pHBAExt, pLUExt, pSrb, pResult, LowestAssumedIrql);
+        ScsiOpReadWrite(pHBAExt, pLUExt, pSrb, pResult, LowestAssumedIrql, diagnostics, ImmediateDiagnostic);
         break;
 
     case SCSIOP_UNMAP:
-        ScsiOpUnmap(pHBAExt, pLUExt, pSrb, pResult, LowestAssumedIrql);
+        ScsiOpUnmap(pHBAExt, pLUExt, pSrb, pResult, LowestAssumedIrql, diagnostics);
         break;
 
     case SCSIOP_READ_TOC:
@@ -260,6 +269,7 @@ __in PKIRQL               LowestAssumedIrql
     } // switch (pSrb->Cdb[0])
 
 Done:
+    AimDiagRelease(diagnostics);
     KdPrint2((__FUNCTION__ ": End: status=0x%X, *pResult=%i\n", (int)pSrb->SrbStatus, (INT)*pResult));
 
     return;
@@ -861,7 +871,8 @@ pHW_LU_EXTENSION * ppLUExt,
 __in UCHAR									PathId,
 __in UCHAR									TargetId,
 __in UCHAR									Lun,
-__in PKIRQL                                 LowestAssumedIrql
+__in PKIRQL                                 LowestAssumedIrql,
+    AIM_DIAG_CONTEXT** Diagnostics
 )
 {
     PLIST_ENTRY           list_ptr;
@@ -870,6 +881,7 @@ __in PKIRQL                                 LowestAssumedIrql
     KLOCK_QUEUE_HANDLE    LockHandle = { 0 };
 
     *ppLUExt = NULL;
+    if (Diagnostics != NULL) *Diagnostics = NULL;
 
     KdPrint2((__FUNCTION__ ": %d:%d:%d\n", PathId, TargetId, Lun));
 
@@ -972,6 +984,14 @@ __in PKIRQL                                 LowestAssumedIrql
         PathId, TargetId, Lun, *ppLUExt));
 
 done:
+
+    // Take the statistics reference while lookup/publication is protected.
+    // Later diagnostic work must not revisit the raw LU pointer.
+    if (Diagnostics != NULL && status == SRB_STATUS_SUCCESS)
+    {
+        *Diagnostics = (*ppLUExt)->Diagnostics;
+        AimDiagReference(*Diagnostics);
+    }
 
     ImScsiReleaseLock(&LockHandle, LowestAssumedIrql);
 
@@ -1647,7 +1667,8 @@ __in pHW_HBA_EXT          pHBAExt, // Adapter device-object extension from port 
 __in pHW_LU_EXTENSION     pLUExt,  // LUN device-object extension from port driver.        
 __in PSCSI_REQUEST_BLOCK  pSrb,
 __in pResultType          pResult,
-__in PKIRQL               LowestAssumedIrql
+__in PKIRQL               LowestAssumedIrql,
+    AIM_DIAG_CONTEXT* Diagnostics, AIM_DIAG_TOKEN* ImmediateDiagnostic
 )
 {
     PCDB                         pCdb = (PCDB)pSrb->Cdb;
@@ -1794,6 +1815,10 @@ __in PKIRQL               LowestAssumedIrql
         return;
     }
 
+    if (pSrb->Cdb[0] == SCSIOP_WRITE || pSrb->Cdb[0] == SCSIOP_WRITE16)
+        AimDiagAccept(&pWkRtnParms->DiagnosticToken, Diagnostics,
+            pSrb->Cdb[0] == SCSIOP_WRITE ? AimDiagWrite10 : AimDiagWrite16);
+
     if (pLUExt->FileObject != NULL)
     {
         // Service work item directly in calling thread context.
@@ -1802,6 +1827,8 @@ __in PKIRQL               LowestAssumedIrql
 
         if (!NT_SUCCESS(status))
         {
+            AimDiagPhase(&pWkRtnParms->DiagnosticToken, 1);
+            AimDiagMove(ImmediateDiagnostic, &pWkRtnParms->DiagnosticToken);
             ExFreePoolWithTag(pWkRtnParms, MP_TAG_GENERAL);
         }
     }
@@ -1958,7 +1985,8 @@ ScsiOpUnmap(
     __in pHW_LU_EXTENSION     pLUExt,  // LUN device-object extension from port driver.        
     __in PSCSI_REQUEST_BLOCK  pSrb,
     __in pResultType          pResult,
-    __in PKIRQL               LowestAssumedIrql
+    __in PKIRQL               LowestAssumedIrql,
+    AIM_DIAG_CONTEXT* Diagnostics
 )
 {
     PCDB pCdb = (PCDB)pSrb->Cdb;
@@ -2078,6 +2106,8 @@ ScsiOpUnmap(
         ScsiSetCheckCondition(pSrb, SRB_STATUS_ERROR, SCSI_SENSE_HARDWARE_ERROR, SCSI_ADSENSE_NO_SENSE, 0);
         return;
     }
+
+    AimDiagAccept(&pWkRtnParms->DiagnosticToken, Diagnostics, AimDiagUnmap);
 
     // Queue work item, which will run in the System process.
 

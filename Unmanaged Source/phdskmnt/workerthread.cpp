@@ -167,6 +167,8 @@ ImScsiWorkerThread(__in PVOID Context)
         }
 
         ImScsiDispatchWork(pWkRtnParms);
+        // Also covers worker failures before any backing operation.
+        AimDiagPhase(&pWkRtnParms->DiagnosticToken, 1);
 
         if (pWkRtnParms->pReqThread != NULL)
         {
@@ -195,7 +197,9 @@ ImScsiWorkerThread(__in PVOID Context)
 
         KdPrint2((__FUNCTION__ ": Sending 'RequestComplete' to StorPort for work: 0x%p.\n", pWkRtnParms));
 
+        AimDiagPhase(&pWkRtnParms->DiagnosticToken, 2);
         StorPortNotification(RequestComplete, pWkRtnParms->pHBAExt, pWkRtnParms->pSrb);
+        AimDiagComplete(&pWkRtnParms->DiagnosticToken);
 
         ExFreePoolWithTag(pWkRtnParms, MP_TAG_GENERAL);
 
@@ -210,7 +214,7 @@ VOID
 ImScsiDispatchReadWrite(
     __in pHW_HBA_EXT pHBAExt,
     __in pHW_LU_EXTENSION pLUExt,
-    __in PSCSI_REQUEST_BLOCK pSrb)
+    __in PSCSI_REQUEST_BLOCK pSrb, AIM_DIAG_TOKEN* DiagnosticToken)
 {
     PCDB pCdb = (PCDB)pSrb->Cdb;
     PVOID sysaddress;
@@ -283,7 +287,8 @@ ImScsiDispatchReadWrite(
     else if ((pSrb->Cdb[0] == SCSIOP_WRITE) || (pSrb->Cdb[0] == SCSIOP_WRITE16))
     {
         RtlMoveMemory(buffer, sysaddress, pSrb->DataTransferLength);
-        status = ImScsiWriteDevice(pLUExt, buffer, &startingOffset, &pSrb->DataTransferLength);
+        status = ImScsiWriteDevice(pLUExt, buffer, &startingOffset, &pSrb->DataTransferLength, DiagnosticToken);
+        AimDiagPhase(DiagnosticToken, 1);
     }
 
     if (!NT_SUCCESS(status))
@@ -478,12 +483,12 @@ __in pMP_WorkRtnParms        pWkRtnParms
         case SCSIOP_READ16:
         case SCSIOP_WRITE16:
             // Read/write?
-            ImScsiDispatchReadWrite(pHBAExt, pLUExt, pSrb);
+            ImScsiDispatchReadWrite(pHBAExt, pLUExt, pSrb, &pWkRtnParms->DiagnosticToken);
             break;
 
         case SCSIOP_UNMAP:
             // UNMAP/TRIM
-            ImScsiDispatchUnmapDevice(pHBAExt, pLUExt, pSrb);
+            ImScsiDispatchUnmapDevice(pHBAExt, pLUExt, pSrb, &pWkRtnParms->DiagnosticToken);
             break;
 
         default:
@@ -506,7 +511,7 @@ VOID
 ImScsiDispatchUnmapDevice(
     __in pHW_HBA_EXT pHBAExt,
     __in pHW_LU_EXTENSION pLUExt,
-    __in PSCSI_REQUEST_BLOCK pSrb)
+    __in PSCSI_REQUEST_BLOCK pSrb, AIM_DIAG_TOKEN* DiagnosticToken)
 {
     PUNMAP_LIST_HEADER list = (PUNMAP_LIST_HEADER)pSrb->DataBuffer;
     USHORT descrlength = RtlUshortByteSwap(*(PUSHORT)list->BlockDescrDataLength);
@@ -567,6 +572,7 @@ ImScsiDispatchUnmapDevice(
             &pLUExt->StopThread,
             items,
             range);
+        AimDiagUnmapResult(DiagnosticToken, status);
     }
     else if (pLUExt->ImageFile != NULL)
     {
@@ -602,6 +608,8 @@ ImScsiDispatchUnmapDevice(
                 NULL,
                 0);
 
+            AimDiagUnmapResult(DiagnosticToken, status);
+
             KdPrint((__FUNCTION__ ": FSCTL_SET_ZERO_DATA result: 0x%#X\n", status));
 
             if (!NT_SUCCESS(status))
@@ -617,6 +625,7 @@ ImScsiDispatchUnmapDevice(
 
 done:
 
+    AimDiagPhase(DiagnosticToken, 1);
     KdPrint((__FUNCTION__ ": Result: %#x\n", status));
 
     ScsiSetSuccess(pSrb, 0);
@@ -684,6 +693,8 @@ ImScsiCreateLU(
     RtlZeroMemory(pLUExt, sizeof(HW_LU_EXTENSION));
 
     pLUExt->DeviceNumber = new_device->Fields.DeviceNumber;
+    pLUExt->Diagnostics = AimDiagCreate((ULONG_PTR)pHBAExt,
+        pLUExt->DeviceNumber.LongNumber, AimDiagUnknown);
 
     KeInitializeEvent(&pLUExt->StopThread, NotificationEvent, FALSE);
 
